@@ -50,3 +50,18 @@ if __name__ == '__main__':
   # LoadFromStorage() bez argumentu szuka pliku googleads.yaml w katalogu domowym (patrz README).
   ad_manager_client = ad_manager.AdManagerClient.LoadFromStorage()
   main(ad_manager_client)
+
+
+# ----------------------------------------------------------------------------
+# Przykładowy wynik (dane syntetyczne): plik CSV_DUMP (.csv.gz)
+#
+# UNIQUE_REACH_FREQUENCY = wyświetlenia / unikalni użytkownicy.
+# Dokładne nagłówki CSV_DUMP i format dat sprawdź przy pierwszym uruchomieniu.
+#
+# | Dimension.COUNTRY_NAME | Dimension.LINE_ITEM_ID | Dimension.LINE_ITEM_NAME | Column.UNIQUE_REACH_FREQUENCY | Column.UNIQUE_REACH_IMPRESSIONS | Column.UNIQUE_REACH |
+# |---|---|---|---:|---:|---:|
+# | Polska | 6012000101 | Marka A - Display homepage - CPM | 3.62 | 1854200 | 512400 |
+# | Polska | 6012000102 | Marka B - Video pre-roll - CPM | 2.13 | 642300 | 301500 |
+# | Niemcy | 6012000101 | Marka A - Display homepage - CPM | 2.18 | 41200 | 18900 |
+# | Wielka Brytania | 6012000102 | Marka B - Video pre-roll - CPM | 1.73 | 12800 | 7400 |
+# | Polska | 6012000103 | Marka C - Sponsoring Sport - CPD | 3.36 | 2310500 | 688100 |

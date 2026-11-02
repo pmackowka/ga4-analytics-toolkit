@@ -69,3 +69,18 @@ if __name__ == '__main__':
   # LoadFromStorage() bez argumentu szuka pliku googleads.yaml w katalogu domowym (patrz README).
   ad_manager_client = ad_manager.AdManagerClient.LoadFromStorage()
   main(ad_manager_client)
+
+
+# ----------------------------------------------------------------------------
+# Przykładowy wynik (dane syntetyczne): plik CSV_DUMP (.csv.gz)
+#
+# Zasięg w poprzednim miesiącu, widok płaski jednostek reklamowych.
+# Dokładne nagłówki CSV_DUMP i format dat sprawdź przy pierwszym uruchomieniu.
+#
+# | Dimension.MONTH_AND_YEAR | Dimension.COUNTRY_NAME | Dimension.AD_UNIT_ID | Dimension.AD_UNIT_NAME | Column.UNIQUE_REACH_FREQUENCY | Column.UNIQUE_REACH_IMPRESSIONS | Column.UNIQUE_REACH |
+# |---|---|---|---|---:|---:|---:|
+# | 2026-10 | Polska | 21800000101 | top_billboard | 3.99 | 12455000 | 3120400 |
+# | 2026-10 | Polska | 21800000102 | rectangle_1 | 3.61 | 10780000 | 2988100 |
+# | 2026-10 | Polska | 21800000103 | inside_text | 4.41 | 15020000 | 3402700 |
+# | 2026-10 | Niemcy | 21800000101 | top_billboard | 2.89 | 284000 | 98200 |
+# | 2026-10 | Wielka Brytania | 21800000103 | inside_text | 2.34 | 96500 | 41300 |

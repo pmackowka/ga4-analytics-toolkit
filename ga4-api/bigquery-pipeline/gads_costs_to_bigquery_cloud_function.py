@@ -84,3 +84,18 @@ def ga4_api_gads(request):
 
     except Exception as e:
         return json.dumps({"error": str(e)}), 500
+
+
+# ----------------------------------------------------------------------------
+# Przykładowy wynik (dane syntetyczne): wiersze w tabeli BigQuery
+#
+# Jeden dzień (sprzed 2 dni) na uruchomienie, typy wg create_table_bq.sql.
+# Odpowiedź HTTP: 200 {"message": "Dane zostały pomyślnie zapisane."} albo 500 {"error": "..."}.
+#
+# | date | googleAdsCampaignName | googleAdsCampaignId | keyEvents | advertiserAdCost | advertiserAdCostPerKeyEvent | advertiserAdImpressions | advertiserAdClicks | advertiserAdCostPerClick | purchaseRevenue | returnOnAdSpend |
+# |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+# | 2026-10-31 | PL_Search_Brand | 21034567811 | 48 | 312.40 | 6.51 | 4120 | 655 | 0.48 | 9420.50 | 30.16 |
+# | 2026-10-31 | PL_Search_Generic | 21034567812 | 61 | 1840.90 | 30.18 | 52300 | 2210 | 0.83 | 41230.00 | 22.40 |
+# | 2026-10-31 | PL_PMax_Wszystkie_produkty | 21034567813 | 97 | 2950.00 | 30.41 | 210400 | 3120 | 0.95 | 69870.25 | 23.68 |
+# | 2026-10-31 | PL_Display_Remarketing | 21034567814 | 12 | 640.20 | 53.35 | 380500 | 1015 | 0.63 | 6210.80 | 9.70 |
+# | 2026-10-31 | PL_YouTube_Zasięg | 21034567815 | 3 | 1200.00 | 400.00 | 455000 | 690 | 1.74 | 590.00 | 0.49 |

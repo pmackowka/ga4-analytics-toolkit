@@ -50,3 +50,19 @@ with open(csv_file_path, mode="w", newline="") as file:
         ])
 
 print(f"Wyniki zapisane do {csv_file_path}")
+
+
+# ----------------------------------------------------------------------------
+# Przykładowy wynik (dane syntetyczne): output_user_demographics.csv
+#
+# Jeden wiersz na przedział wiekowy; unknown = brak danych demograficznych.
+#
+# | date | userAgeBracket | activeUsers |
+# |---|---|---:|
+# | 20240701 | 18-24 | 4120 |
+# | 20240701 | 25-34 | 9875 |
+# | 20240701 | 35-44 | 8430 |
+# | 20240701 | 45-54 | 5210 |
+# | 20240701 | 55-64 | 2380 |
+# | 20240701 | 65+ | 1105 |
+# | 20240701 | unknown | 14630 |

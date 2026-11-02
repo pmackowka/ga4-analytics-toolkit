@@ -5,3 +5,9 @@ from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import DateRange, Dimension, Metric, RunReportRequest
 
 print("Wszystkie biblioteki zostały zaimportowane poprawnie.")
+
+
+# ----------------------------------------------------------------------------
+# Przykładowy wynik (dane syntetyczne): komunikat w konsoli
+#
+# Wszystkie biblioteki zostały zaimportowane poprawnie.

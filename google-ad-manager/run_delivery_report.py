@@ -88,3 +88,16 @@ def main(client, order_id):
 if __name__ == '__main__':
   # LoadFromStorage() bez argumentu szuka pliku googleads.yaml w katalogu domowym (patrz README).
   ad_manager_client = ad_manager.AdManagerClient.LoadFromStorage()
+
+
+# ----------------------------------------------------------------------------
+# Przykładowy wynik (dane syntetyczne): plik CSV_DUMP (.csv.gz)
+#
+# Filtr na jedno zamówienie = jeden wiersz; dwa wiersze to dwa uruchomienia.
+# Kwoty w mikrojednostkach waluty sieci (1 zł = 1 000 000), CTR jako ułamek.
+# Dokładne nagłówki CSV_DUMP i format dat sprawdź przy pierwszym uruchomieniu.
+#
+# | Dimension.ORDER_ID | Dimension.ORDER_NAME | DimensionAttribute.ORDER_TRAFFICKER | DimensionAttribute.ORDER_START_DATE_TIME | DimensionAttribute.ORDER_END_DATE_TIME | Column.AD_SERVER_IMPRESSIONS | Column.AD_SERVER_CLICKS | Column.AD_SERVER_CTR | Column.AD_SERVER_CPM_AND_CPC_REVENUE | Column.AD_SERVER_WITHOUT_CPD_AVERAGE_ECPM |
+# |---|---|---|---|---|---:|---:|---:|---:|---:|
+# | 3412000001 | 2026-10 - Marka A - Display homepage | Trafficker A | 2026-10-01T00:00:00+02:00 | 2026-10-31T23:59:00+01:00 | 1854200 | 2967 | 0.0016 | 8901600000 | 4800777 |
+# | 3412000002 | 2026-10 - Marka B - Video pre-roll | Trafficker B | 2026-10-15T00:00:00+02:00 | 2026-11-15T23:59:00+01:00 | 642300 | 1092 | 0.0017 | 15415200000 | 24000000 |

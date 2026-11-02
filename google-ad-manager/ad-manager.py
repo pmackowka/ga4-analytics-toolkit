@@ -19,3 +19,9 @@ if __name__ == '__main__':
   ad_manager_client = ad_manager.AdManagerClient.LoadFromStorage()
 
   main(ad_manager_client)
+
+
+# ----------------------------------------------------------------------------
+# Przykładowy wynik (dane syntetyczne): komunikat w konsoli
+#
+# Current network has network code '21800000' and display name 'Przykładowa sieć'.
