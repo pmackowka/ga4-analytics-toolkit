@@ -1,7 +1,7 @@
 """
 Google Cloud Function (HTTP) uruchamiana codziennie przez Cloud Scheduler.
 Pobiera z GA4 Data API dzienny raport kosztów i konwersji kampanii Google Ads
-i zapisuje go do partycji dnia w BigQuery (tabela: create_table_bq.sql).
+i zapisuje go do partycji dnia w BigQuery (tabela: create_table_bq_v2.sql).
 
 Uwierzytelnianie: Application Default Credentials — w Cloud Functions to konto usługi
 przypisane do funkcji (Viewer we właściwości GA4, BigQuery Data Editor w datasecie).

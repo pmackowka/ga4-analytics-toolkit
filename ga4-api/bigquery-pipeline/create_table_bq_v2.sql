@@ -1,4 +1,4 @@
--- Tabela docelowa dla gads_costs_to_bigquery_cloud_function.py.
+-- Tabela docelowa dla gads_costs_to_bigquery_cloud_function_v2.py.
 -- Partycjonowanie po `date` pozwala funkcji nadpisywać dane jednego dnia
 -- (tabela$RRRRMMDD + WRITE_TRUNCATE) zamiast dogrywać wiersze.
 -- Podmień YOUR_PROJECT / YOUR_DATASET / YOUR_TABLE.

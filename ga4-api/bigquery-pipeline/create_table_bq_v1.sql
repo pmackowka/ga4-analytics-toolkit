@@ -1,5 +1,5 @@
 -- WERSJA 1 (archiwalna): tabela bez partycji dla gads_costs_to_bigquery_cloud_function_v1.py.
--- Aktualna tabela (partycjonowana po date): create_table_bq.sql.
+-- Aktualna tabela (partycjonowana po date): create_table_bq_v2.sql.
 -- Tabela docelowa dla codziennego importu kosztów/konwersji Google Ads z GA4 Data API.
 -- Podmień YOUR_PROJECT / YOUR_DATASET / YOUR_TABLE na własne (patrz gads_costs_to_bigquery_cloud_function_v1.py).
 

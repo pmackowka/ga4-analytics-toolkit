@@ -1,7 +1,7 @@
 """
 WERSJA 1 (archiwalna) — pierwsza wersja funkcji, zachowana do porównania.
 Aktualna wersja z poprawkami opisanymi na dole tego pliku:
-gads_costs_to_bigquery_cloud_function.py (tabela: create_table_bq.sql).
+gads_costs_to_bigquery_cloud_function_v2.py (tabela: create_table_bq_v2.sql).
 
 Google Cloud Function (HTTP trigger) uruchamiana codziennie przez Cloud Scheduler.
 Pobiera z GA4 Data API dzienny raport kosztów/konwersji Google Ads sprzed 2 dni
@@ -32,13 +32,13 @@ Zmienne środowiskowe (ustawiane w konfiguracji Cloud Function):
 # Na końcu pliku: co poprawiłbym dziś (idempotentność, paginacja, format daty).
 # ============================================================================
 
-import json
-import os
-from datetime import date, timedelta
+import json  # zamiana słowników na tekst JSON w odpowiedzi HTTP
+import os  # odczyt zmiennych środowiskowych z konfiguracji funkcji
+from datetime import date, timedelta  # wyliczenie daty „przedwczoraj”
 
-from google.analytics.data_v1beta import BetaAnalyticsDataClient
-from google.analytics.data_v1beta.types import DateRange, Dimension, Metric, RunReportRequest
-from google.cloud import bigquery
+from google.analytics.data_v1beta import BetaAnalyticsDataClient  # klient GA4 Data API do pobierania raportów
+from google.analytics.data_v1beta.types import DateRange, Dimension, Metric, RunReportRequest  # elementy zapytania o raport: zakres dat, wymiar, metryka, całe zapytanie
+from google.cloud import bigquery  # klient BigQuery do zapisu wierszy w tabeli
 
 # KROK 2 — konfiguracja ze zmiennych środowiskowych Cloud Function.
 # Ten sam kod działa dla innej właściwości albo tabeli bez zmiany kodu;
