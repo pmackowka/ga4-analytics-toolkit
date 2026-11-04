@@ -149,7 +149,7 @@ def ga4_api_gads(request):
 # ----------------------------------------------------------------------------
 # Przykładowy wynik (dane syntetyczne): wiersze w tabeli BigQuery
 #
-# Jeden dzień (sprzed 2 dni) na uruchomienie, typy wg create_table_bq.sql.
+# Jeden dzień (sprzed 2 dni) na uruchomienie, typy wg create_table_bq_v1.sql.
 # Odpowiedź HTTP: 200 {"message": "Dane zostały pomyślnie zapisane."} albo 500 {"error": "..."}.
 #
 # | date | googleAdsCampaignName | googleAdsCampaignId | keyEvents | advertiserAdCost | advertiserAdCostPerKeyEvent | advertiserAdImpressions | advertiserAdClicks | advertiserAdCostPerClick | purchaseRevenue | returnOnAdSpend |
