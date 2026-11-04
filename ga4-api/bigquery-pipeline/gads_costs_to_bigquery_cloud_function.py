@@ -55,7 +55,10 @@ TABLE_ID = os.environ["BQ_TABLE_ID"]
 # na zapytanie; jawny limit + offset pozwala pobrać wszystko w kolejnych porcjach.
 PAGE_SIZE = 10_000
 
+# Wymiary = po czym GA4 grupuje wiersze raportu (jeden wiersz = dzień × kampania).
 DIMENSIONS = ["date", "googleAdsCampaignName", "googleAdsCampaignId"]
+# Metryki = co GA4 liczy dla każdego wiersza. Kolejność ma znaczenie: w tej samej
+# kolejności wracają wartości w odpowiedzi (row.metric_values).
 METRICS = [
     "keyEvents",
     "advertiserAdCost",
@@ -78,24 +81,41 @@ GA4_RETRY = api_retry.Retry(
         api_exceptions.TooManyRequests,
         api_exceptions.ResourceExhausted,
     ),
-    initial=2.0,
-    maximum=60.0,
-    multiplier=2.0,
-    timeout=300.0,
+    initial=2.0,      # pierwsza przerwa przed ponowieniem: 2 s
+    maximum=60.0,     # najdłuższa pojedyncza przerwa: 60 s
+    multiplier=2.0,   # każda kolejna przerwa 2× dłuższa: 2, 4, 8, 16... s
+    timeout=300.0,    # po 5 minutach prób — rezygnujemy i zgłaszamy błąd
 )
 
 
+# Logowanie strukturalne — zamiast zwykłego tekstu każdy wpis jest jedną linią JSON.
+# Cloud Functions przekazuje wszystko, co trafia na standardowe wyjście (print), do
+# Cloud Logging. Gdy linia jest poprawnym JSON-em, Cloud Logging rozbija ją na pola:
+# - `severity` ustawia poziom wpisu (INFO, WARNING, ERROR) — po nim filtrujesz logi
+#   i ustawiasz alert, np. „powiadom, gdy pojawi się ERROR z tej funkcji”,
+# - `message` to treść widoczna na liście logów,
+# - pozostałe pola (np. date, rows) są osobnymi, przeszukiwalnymi polami wpisu.
+# Przykład wywołania: log("ERROR", "Niekompletny zapis", date="2026-10-31", api_rows=5)
+# daje linię: {"severity": "ERROR", "message": "Niekompletny zapis", "date": "2026-10-31", "api_rows": 5}
 def log(severity, message, **fields):
     """Log strukturalny: Cloud Logging odczytuje JSON z stdout i pole `severity`."""
+    # **fields zbiera dowolne dodatkowe argumenty nazwane (date=..., rows=...) w słownik,
+    # a {..., **fields} dokleja je do wpisu obok severity i message.
+    # json.dumps zamienia słownik na tekst JSON; ensure_ascii=False zostawia polskie
+    # znaki czytelne („Zapisano partycję”) zamiast kodów w rodzaju \u0119.
     print(json.dumps({"severity": severity, "message": message, **fields}, ensure_ascii=False))
 
 
 # KROK 3 — zakres dat. Domyślnie przedwczoraj; data z treści żądania
 # ({"date": "2026-10-30"}) pozwala ponownie przeliczyć albo uzupełnić konkretny dzień.
 def resolve_report_date(request):
+    # Treść żądania jako JSON; silent=True zwraca None zamiast błędu, gdy treść jest
+    # pusta albo nie jest JSON-em (harmonogram zwykle wysyła puste żądanie).
     payload = request.get_json(silent=True) if request is not None else None
     if payload and payload.get("date"):
+        # Data podana ręcznie, np. przy uzupełnianiu historii: tekst -> obiekt daty.
         return datetime.strptime(payload["date"], "%Y-%m-%d").date()
+    # Domyślnie: dzisiaj minus 2 dni.
     return date.today() - timedelta(days=2)
 
 
@@ -103,8 +123,8 @@ def resolve_report_date(request):
 # Pętla kończy się, gdy pobierzemy tyle wierszy, ile API zgłasza w row_count,
 # albo gdy strona przyjdzie pusta.
 def fetch_all_rows(client, report_date):
-    day = report_date.strftime("%Y-%m-%d")
-    rows, offset, total = [], 0, None
+    day = report_date.strftime("%Y-%m-%d")  # GA4 przyjmuje daty jako tekst RRRR-MM-DD
+    rows, offset, total = [], 0, None        # zebrane wiersze, pozycja startu strony, suma z API
     while True:
         request = RunReportRequest(
             property=PROPERTY_ID,
@@ -116,18 +136,21 @@ def fetch_all_rows(client, report_date):
         )
         response = client.run_report(request, retry=GA4_RETRY)
         total = response.row_count  # łączna liczba wierszy raportu (wszystkie strony)
-        rows.extend(response.rows)
-        offset += len(response.rows)
-        if not response.rows or offset >= total:
+        rows.extend(response.rows)              # dołącz wiersze tej strony do wyniku
+        offset += len(response.rows)            # następna strona zaczyna się za tą
+        if not response.rows or offset >= total:  # pusta strona albo komplet = koniec
             return rows, total
 
 
 # KROK 6 — transformacja jednego wiersza GA4 do formatu tabeli.
 # GA4 zwraca wartości jako tekst w kolejności z DIMENSIONS i METRICS.
 def to_record(row):
+    # zip łączy w pary nazwę wymiaru z jego wartością: ("date", "20261031"),
+    # ("googleAdsCampaignName", "PL_Search_Brand")...; z par powstaje słownik.
     record = {name: value.value for name, value in zip(DIMENSIONS, row.dimension_values)}
     # Data: GA4 zwraca RRRRMMDD, kolumna DATE w BigQuery wymaga RRRR-MM-DD.
     record["date"] = datetime.strptime(record["date"], "%Y%m%d").strftime("%Y-%m-%d")
+    # To samo dla metryk: nazwa metryki + wartość, tekst zamieniony na liczbę.
     for name, value in zip(METRICS, row.metric_values):
         number = float(value.value)
         # Liczniki zaokrąglamy do liczby całkowitej (GA4 potrafi zwrócić "12.0").
@@ -139,22 +162,27 @@ def to_record(row):
 # (dekorator tabela$RRRRMMDD) w trybie WRITE_TRUNCATE. Ponowne uruchomienie
 # za ten sam dzień zastępuje jego dane zamiast je dublować.
 def load_partition(bq_client, records, report_date):
-    table_ref = f"{bq_client.project}.{DATASET_ID}.{TABLE_ID}"
-    partition = f"{table_ref}${report_date.strftime('%Y%m%d')}"
+    table_ref = f"{bq_client.project}.{DATASET_ID}.{TABLE_ID}"           # projekt.dataset.tabela
+    partition = f"{table_ref}${report_date.strftime('%Y%m%d')}"         # np. ...tabela$20261031 = tylko ten dzień
     job_config = bigquery.LoadJobConfig(
-        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
-        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,     # zastąp zawartość partycji
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,     # rekordy wysyłane jako JSON
     )
+    # Zadanie ładowania (load job) zamiast wstawiania strumieniowego; .result() czeka,
+    # aż BigQuery skończy, i rzuca wyjątek, jeśli ładowanie się nie uda.
     bq_client.load_table_from_json(records, partition, job_config=job_config).result()
     return table_ref
 
 
 # KROK 8 — kontrola kompletności: ile wierszy jest w partycji po zapisie.
 def count_partition_rows(bq_client, table_ref, report_date):
+    # @day to parametr zapytania: wartość przekazujemy osobno, zamiast wklejać ją do
+    # tekstu SQL — bezpieczniej i bez problemów z formatem daty.
     query = f"SELECT COUNT(*) AS n FROM `{table_ref}` WHERE date = @day"
     job_config = bigquery.QueryJobConfig(
         query_parameters=[bigquery.ScalarQueryParameter("day", "DATE", report_date)]
     )
+    # Wynik zapytania to jeden wiersz z kolumną n — zwracamy samą liczbę.
     return list(bq_client.query(query, job_config=job_config).result())[0].n
 
 
