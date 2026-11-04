@@ -1,21 +1,20 @@
--- Tabela docelowa dla codziennego importu kosztów/konwersji Google Ads z GA4 Data API.
--- Podmień YOUR_PROJECT / YOUR_DATASET / YOUR_TABLE na własne (patrz gads_costs_to_bigquery_cloud_function.py).
+-- Tabela docelowa dla gads_costs_to_bigquery_cloud_function.py.
+-- Partycjonowanie po `date` pozwala funkcji nadpisywać dane jednego dnia
+-- (tabela$RRRRMMDD + WRITE_TRUNCATE) zamiast dogrywać wiersze.
+-- Podmień YOUR_PROJECT / YOUR_DATASET / YOUR_TABLE.
 
-CREATE OR REPLACE TABLE `YOUR_PROJECT.YOUR_DATASET.YOUR_TABLE` (
-    date DATE,
+CREATE TABLE IF NOT EXISTS `YOUR_PROJECT.YOUR_DATASET.YOUR_TABLE` (
+    date DATE,                          -- dzień raportu (z GA4 RRRRMMDD, przeformatowany w funkcji)
     googleAdsCampaignName STRING,
     googleAdsCampaignId STRING,
-    keyEvents INT64,
-    advertiserAdCost FLOAT64,
+    keyEvents INT64,                    -- liczba kluczowych zdarzeń
+    advertiserAdCost FLOAT64,           -- koszt reklam
     advertiserAdCostPerKeyEvent FLOAT64,
     advertiserAdImpressions INT64,
     advertiserAdClicks INT64,
     advertiserAdCostPerClick FLOAT64,
     purchaseRevenue FLOAT64,
-    returnOnAdSpend FLOAT64
-);
-
--- Odpowiednik przez bq CLI, jeśli wolisz nie tworzyć tabeli w konsoli:
--- bq mk --table \
---   YOUR_PROJECT:YOUR_DATASET.YOUR_TABLE \
---   date:DATE,googleAdsCampaignName:STRING,googleAdsCampaignId:STRING,keyEvents:INTEGER,advertiserAdCost:FLOAT,advertiserAdCostPerKeyEvent:FLOAT,advertiserAdImpressions:INTEGER,advertiserAdClicks:INTEGER,advertiserAdCostPerClick:FLOAT,purchaseRevenue:FLOAT,returnOnAdSpend:FLOAT
+    returnOnAdSpend FLOAT64             -- przychód / koszt (ułamek)
+)
+PARTITION BY date                       -- jedna partycja na dzień = jednostka nadpisywania
+OPTIONS (require_partition_filter = FALSE);

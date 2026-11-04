@@ -1,152 +1,222 @@
 """
-Google Cloud Function (HTTP trigger) uruchamiana codziennie przez Cloud Scheduler.
-Pobiera z GA4 Data API dzienny raport kosztów/konwersji Google Ads sprzed 2 dni
-(GA4 potrzebuje ok. 24-48h, żeby dane z Ads w pełni się ułożyły) i dogrywa wiersze
-do tabeli w BigQuery zdefiniowanej w create_table_bq.sql.
+Google Cloud Function (HTTP) uruchamiana codziennie przez Cloud Scheduler.
+Pobiera z GA4 Data API dzienny raport kosztów i konwersji kampanii Google Ads
+i zapisuje go do partycji dnia w BigQuery (tabela: create_table_bq.sql).
 
-Uwierzytelnianie GA4 i BigQuery: BetaAnalyticsDataClient() i bigquery.Client() bez
-argumentów korzystają z Application Default Credentials — w środowisku Cloud Functions
-to konto usługi przypisane do funkcji (musi mieć uprawnienia "Viewer" do właściwości GA4
-i "BigQuery Data Editor" do datasetu docelowego).
+Uwierzytelnianie: Application Default Credentials — w Cloud Functions to konto usługi
+przypisane do funkcji (Viewer we właściwości GA4, BigQuery Data Editor w datasecie).
 
-Zmienne środowiskowe (ustawiane w konfiguracji Cloud Function):
+Zmienne środowiskowe (konfiguracja Cloud Function):
 - GA4_PROPERTY_ID   — ID właściwości GA4 (bez prefiksu "properties/")
 - BQ_DATASET_ID     — dataset docelowy w BigQuery
-- BQ_TABLE_ID       — tabela docelowa w BigQuery
+- BQ_TABLE_ID       — tabela docelowa w BigQuery (partycjonowana po `date`)
+
+Opcjonalnie w treści żądania: {"date": "RRRR-MM-DD"} — przeliczenie albo uzupełnienie
+konkretnego dnia (backfill).
 """
 
 # ============================================================================
-# JAK OPOWIEDZIEĆ TEN SKRYPT — 7 kroków (komentarze „KROK n” niżej w kodzie)
-#   1. Uruchomienie: Cloud Scheduler codziennie rano wywołuje funkcję przez HTTP.
-#   2. Konfiguracja: ID właściwości GA4 i tabeli docelowej ze zmiennych
-#      środowiskowych — nic nie jest wpisane na sztywno w kodzie.
-#   3. Zakres dat: dzień sprzed 2 dni, bo dane Google Ads w GA4 układają się do 48 h.
-#   4. Uwierzytelnienie: konto usługi przypisane do funkcji (ADC), bez pliku klucza.
-#   5. Zapytanie do GA4 Data API (REST): wymiary + metryki kampanii Google Ads.
-#   6. Transformacja: każdy wiersz odpowiedzi -> słownik z typami pod schemat tabeli.
-#   7. Zapis do BigQuery i odpowiedź HTTP 200 / 500 dla harmonogramu.
-# Na końcu pliku: co poprawiłbym dziś (idempotentność, paginacja, format daty).
+# JAK OPOWIEDZIEĆ TEN SKRYPT — 8 kroków (komentarze „KROK n” niżej w kodzie)
+#   1. Uruchomienie: Cloud Scheduler wywołuje funkcję przez HTTP; opcjonalnie
+#      w treści żądania można podać datę, żeby uzupełnić konkretny dzień.
+#   2. Konfiguracja ze zmiennych środowiskowych, bez wartości w kodzie.
+#   3. Zakres dat: domyślnie przedwczoraj (opóźnienie danych Ads w GA4 do 48 h).
+#   4. Uwierzytelnienie: konto usługi przypisane do funkcji (ADC), bez klucza.
+#   5. Pobranie z GA4 Data API z paginacją i ponawianiem przy chwilowych błędach.
+#   6. Transformacja: data w formacie DATE, typy zgodne ze schematem tabeli.
+#   7. Zapis idempotentny: nadpisanie partycji dnia (WRITE_TRUNCATE).
+#   8. Kontrola kompletności: liczba wierszy w partycji = liczba z API, log + kod HTTP.
 # ============================================================================
 
-import json
-import os
-from datetime import date, timedelta
+# --- Biblioteki standardowe Pythona (wbudowane, bez instalacji) ---
+import json  # zamiana słowników na tekst JSON: odpowiedź HTTP i logi
+import os  # odczyt zmiennych środowiskowych (konfiguracja funkcji)
+from datetime import date, datetime, timedelta  # daty: „przedwczoraj”, parsowanie i formatowanie
 
+# --- Biblioteki Google (instalacja: pip install google-analytics-data google-cloud-bigquery) ---
+# Klient GA4 Data API — wysyła zapytania o raporty do właściwości GA4.
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
+# Klocki zapytania: zakres dat, wymiar, metryka i całe zapytanie o raport.
 from google.analytics.data_v1beta.types import DateRange, Dimension, Metric, RunReportRequest
+# Typy błędów zwracanych przez API Google (np. 429 = za dużo zapytań, 503 = usługa niedostępna).
+from google.api_core import exceptions as api_exceptions
+# Mechanizm ponawiania wywołań z rosnącym odstępem (exponential backoff).
+from google.api_core import retry as api_retry
+# Klient BigQuery — ładowanie danych do tabeli i zapytania SQL.
 from google.cloud import bigquery
 
-# KROK 2 — konfiguracja ze zmiennych środowiskowych Cloud Function.
-# Ten sam kod działa dla innej właściwości albo tabeli bez zmiany kodu;
-# brak zmiennej kończy się błędem od razu przy starcie (KeyError), nie w połowie.
+# KROK 2 — konfiguracja ze zmiennych środowiskowych: ten sam kod działa dla innej
+# właściwości albo tabeli, a brak zmiennej kończy się błędem od razu przy starcie.
 PROPERTY_ID = f"properties/{os.environ['GA4_PROPERTY_ID']}"
 DATASET_ID = os.environ["BQ_DATASET_ID"]
 TABLE_ID = os.environ["BQ_TABLE_ID"]
 
+# Rozmiar jednej strony wyników. GA4 Data API zwraca domyślnie do 10 000 wierszy
+# na zapytanie; jawny limit + offset pozwala pobrać wszystko w kolejnych porcjach.
+PAGE_SIZE = 10_000
 
-# KROK 1 — punkt wejścia funkcji HTTP. Cloud Scheduler wysyła tu zapytanie
-# codziennie rano; argument `request` nie jest używany, bo funkcja nie potrzebuje
-# parametrów — wszystko wynika z daty i konfiguracji.
+DIMENSIONS = ["date", "googleAdsCampaignName", "googleAdsCampaignId"]
+METRICS = [
+    "keyEvents",
+    "advertiserAdCost",
+    "advertiserAdCostPerKeyEvent",
+    "advertiserAdImpressions",
+    "advertiserAdClicks",
+    "advertiserAdCostPerClick",
+    "purchaseRevenue",
+    "returnOnAdSpend",
+]
+# Metryki zapisywane jako INT64 (liczniki); reszta jako FLOAT64 (kwoty i ilorazy).
+INT_METRICS = {"keyEvents", "advertiserAdImpressions", "advertiserAdClicks"}
+
+# Ponawianie wywołań API: chwilowe błędy serwera i przekroczenie limitu (429)
+# ponawiamy z rosnącym odstępem, do 5 minut łącznie; inne błędy przerywają od razu.
+GA4_RETRY = api_retry.Retry(
+    predicate=api_retry.if_exception_type(
+        api_exceptions.ServiceUnavailable,
+        api_exceptions.InternalServerError,
+        api_exceptions.TooManyRequests,
+        api_exceptions.ResourceExhausted,
+    ),
+    initial=2.0,
+    maximum=60.0,
+    multiplier=2.0,
+    timeout=300.0,
+)
+
+
+def log(severity, message, **fields):
+    """Log strukturalny: Cloud Logging odczytuje JSON z stdout i pole `severity`."""
+    print(json.dumps({"severity": severity, "message": message, **fields}, ensure_ascii=False))
+
+
+# KROK 3 — zakres dat. Domyślnie przedwczoraj; data z treści żądania
+# ({"date": "2026-10-30"}) pozwala ponownie przeliczyć albo uzupełnić konkretny dzień.
+def resolve_report_date(request):
+    payload = request.get_json(silent=True) if request is not None else None
+    if payload and payload.get("date"):
+        return datetime.strptime(payload["date"], "%Y-%m-%d").date()
+    return date.today() - timedelta(days=2)
+
+
+# KROK 5 — pobranie wszystkich wierszy z paginacją (limit + offset).
+# Pętla kończy się, gdy pobierzemy tyle wierszy, ile API zgłasza w row_count,
+# albo gdy strona przyjdzie pusta.
+def fetch_all_rows(client, report_date):
+    day = report_date.strftime("%Y-%m-%d")
+    rows, offset, total = [], 0, None
+    while True:
+        request = RunReportRequest(
+            property=PROPERTY_ID,
+            dimensions=[Dimension(name=d) for d in DIMENSIONS],
+            metrics=[Metric(name=m) for m in METRICS],
+            date_ranges=[DateRange(start_date=day, end_date=day)],
+            limit=PAGE_SIZE,
+            offset=offset,
+        )
+        response = client.run_report(request, retry=GA4_RETRY)
+        total = response.row_count  # łączna liczba wierszy raportu (wszystkie strony)
+        rows.extend(response.rows)
+        offset += len(response.rows)
+        if not response.rows or offset >= total:
+            return rows, total
+
+
+# KROK 6 — transformacja jednego wiersza GA4 do formatu tabeli.
+# GA4 zwraca wartości jako tekst w kolejności z DIMENSIONS i METRICS.
+def to_record(row):
+    record = {name: value.value for name, value in zip(DIMENSIONS, row.dimension_values)}
+    # Data: GA4 zwraca RRRRMMDD, kolumna DATE w BigQuery wymaga RRRR-MM-DD.
+    record["date"] = datetime.strptime(record["date"], "%Y%m%d").strftime("%Y-%m-%d")
+    for name, value in zip(METRICS, row.metric_values):
+        number = float(value.value)
+        # Liczniki zaokrąglamy do liczby całkowitej (GA4 potrafi zwrócić "12.0").
+        record[name] = int(round(number)) if name in INT_METRICS else number
+    return record
+
+
+# KROK 7 — zapis idempotentny: zadanie ładowania do jednej partycji dnia
+# (dekorator tabela$RRRRMMDD) w trybie WRITE_TRUNCATE. Ponowne uruchomienie
+# za ten sam dzień zastępuje jego dane zamiast je dublować.
+def load_partition(bq_client, records, report_date):
+    table_ref = f"{bq_client.project}.{DATASET_ID}.{TABLE_ID}"
+    partition = f"{table_ref}${report_date.strftime('%Y%m%d')}"
+    job_config = bigquery.LoadJobConfig(
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+    )
+    bq_client.load_table_from_json(records, partition, job_config=job_config).result()
+    return table_ref
+
+
+# KROK 8 — kontrola kompletności: ile wierszy jest w partycji po zapisie.
+def count_partition_rows(bq_client, table_ref, report_date):
+    query = f"SELECT COUNT(*) AS n FROM `{table_ref}` WHERE date = @day"
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("day", "DATE", report_date)]
+    )
+    return list(bq_client.query(query, job_config=job_config).result())[0].n
+
+
+# KROK 1 — punkt wejścia funkcji HTTP (wywołuje go Cloud Scheduler).
 def ga4_api_gads(request):
     try:
-        # KROK 3 — zakres dat: jeden dzień, przedwczoraj.
-        # Wczorajszy dzień byłby niepełny: koszty i konwersje Google Ads
-        # dochodzą do GA4 z opóźnieniem do ok. 48 godzin.
-        przedwczoraj = date.today() - timedelta(days=2)
-        przedwczoraj_str = przedwczoraj.strftime("%Y-%m-%d")
+        report_date = resolve_report_date(request)
 
-        # KROK 4 — klienci API bez argumentów = Application Default Credentials.
-        # W Cloud Functions to konto usługi przypisane do funkcji: Viewer we
-        # właściwości GA4 i BigQuery Data Editor w datasecie docelowym.
-        # Zero kluczy JSON w kodzie i w repo.
+        # KROK 4 — klienci API przez Application Default Credentials: konto usługi
+        # przypisane do funkcji, bez pliku klucza w kodzie i w repo.
         client = BetaAnalyticsDataClient()
         bq_client = bigquery.Client()
 
-        # KROK 5 — definicja raportu dla GA4 Data API (API REST; biblioteka
-        # kliencka wysyła je domyślnie przez gRPC). Wymiary = po czym grupujemy
-        # (dzień, kampania), metryki = co liczymy (koszt, kliknięcia, przychód, ROAS).
-        ga4_request = RunReportRequest(
-            property=PROPERTY_ID,
-            dimensions=[
-                Dimension(name="date"),
-                Dimension(name="googleAdsCampaignName"),
-                Dimension(name="googleAdsCampaignId"),
-            ],
-            metrics=[
-                Metric(name="keyEvents"),
-                Metric(name="advertiserAdCost"),
-                Metric(name="advertiserAdCostPerKeyEvent"),
-                Metric(name="advertiserAdImpressions"),
-                Metric(name="advertiserAdClicks"),
-                Metric(name="advertiserAdCostPerClick"),
-                Metric(name="purchaseRevenue"),
-                Metric(name="returnOnAdSpend"),
-            ],
-            date_ranges=[DateRange(start_date=przedwczoraj_str, end_date=przedwczoraj_str)],
-        )
+        rows, api_total = fetch_all_rows(client, report_date)
+        records = [to_record(row) for row in rows]
 
-        # Wywołanie API — jedno zapytanie, odpowiedź z wierszami raportu.
-        response = client.run_report(ga4_request)
+        if not records:
+            # Brak wierszy to nie zawsze błąd (np. dzień bez aktywnych kampanii),
+            # ale ma być widoczny w logach — partycji nie nadpisujemy pustą listą.
+            log("WARNING", "GA4 zwróciło 0 wierszy", date=str(report_date))
+            return json.dumps({"message": "Brak danych za ten dzień.", "date": str(report_date)}), 200
 
-        # KROK 6 — transformacja odpowiedzi do formatu tabeli BigQuery.
-        # GA4 zwraca każdą wartość jako tekst, w kolejności z definicji raportu:
-        # dimension_values[0] = date, [1] = nazwa kampanii itd. Dlatego jawnie
-        # rzutujemy typy: kwoty na float, liczniki na int (przez float, bo GA4
-        # potrafi zwrócić "12.0").
-        rows_to_insert = [
-            {
-                "date": row.dimension_values[0].value,
-                "googleAdsCampaignName": row.dimension_values[1].value,
-                "googleAdsCampaignId": row.dimension_values[2].value,
-                "keyEvents": float(row.metric_values[0].value),
-                "advertiserAdCost": float(row.metric_values[1].value),
-                "advertiserAdCostPerKeyEvent": float(row.metric_values[2].value),
-                "advertiserAdImpressions": int(float(row.metric_values[3].value)),
-                "advertiserAdClicks": int(float(row.metric_values[4].value)),
-                "advertiserAdCostPerClick": float(row.metric_values[5].value),
-                "purchaseRevenue": float(row.metric_values[6].value),
-                "returnOnAdSpend": float(row.metric_values[7].value),
-            }
-            for row in response.rows
-        ]
+        table_ref = load_partition(bq_client, records, report_date)
+        loaded = count_partition_rows(bq_client, table_ref, report_date)
 
-        # KROK 7 — zapis do BigQuery: projekt bierzemy z konta usługi,
-        # dataset i tabelę ze zmiennych środowiskowych.
-        table_ref = f"{bq_client.project}.{DATASET_ID}.{TABLE_ID}"
-        errors = bq_client.insert_rows_json(table_ref, rows_to_insert)
+        if loaded != api_total:
+            # Niezgodność liczby wierszy = alert (log ERROR + kod 500 dla harmonogramu).
+            log("ERROR", "Niekompletny zapis", date=str(report_date), api_rows=api_total, loaded_rows=loaded)
+            return json.dumps({"error": f"API: {api_total} wierszy, w tabeli: {loaded}"}), 500
 
-        # Kod HTTP dla Cloud Scheduler: 200 = sukces, 500 = błąd zapisu.
-        # Dzięki 500 harmonogram widzi nieudane uruchomienie i może je ponowić.
-        if not errors:
-            return json.dumps({"message": "Dane zostały pomyślnie zapisane."}), 200
-        return json.dumps({"error": f"Wystąpiły błędy: {errors}"}), 500
+        log("INFO", "Zapisano partycję", date=str(report_date), rows=loaded)
+        return json.dumps({"message": "Dane zostały pomyślnie zapisane.", "date": str(report_date), "rows": loaded}), 200
 
-    # Każdy inny błąd (brak uprawnień, limit API, zła zmienna) też zwraca 500
-    # z opisem — błąd ma być widoczny w logach, a nie ginąć po cichu.
     except Exception as e:
+        # Każdy inny błąd: log ERROR z opisem i kod 500, żeby harmonogram widział porażkę.
+        log("ERROR", "Błąd funkcji", error=str(e))
         return json.dumps({"error": str(e)}), 500
 
 
 # ----------------------------------------------------------------------------
-# CO POPRAWIŁBYM DZIŚ (odpowiedź na „co zrobiłby Pan lepiej?”)
-#   1. Idempotentność: insert_rows_json dogrywa wiersze, więc ponowne
-#      uruchomienie za ten sam dzień dubluje dane. Lepiej: zadanie ładowania
-#      z nadpisaniem partycji dnia (WRITE_TRUNCATE) albo MERGE po dacie i kampanii.
-#   2. Paginacja: run_report zwraca domyślnie do 10 000 wierszy; przy
-#      szczegółowszym raporcie wynik byłby po cichu ucięty. Lepiej: sprawdzić
-#      response.row_count i dociągać kolejne porcje przez limit/offset.
-#   3. Format daty: GA4 zwraca date jako RRRRMMDD, a kolumna `date` w tabeli
-#      ma typ DATE — przed zapisem przeformatować na RRRR-MM-DD.
-#   4. Typy: keyEvents jest rzutowane na float, a w tabeli to INT64 — ujednolicić.
-#   5. Kontrola kompletności po zapisie (czy dzień ma wiersze) z alertem.
+# PRZED JAKIMI BŁĘDAMI CHRONI TEN KOD (odpowiedź na „na co Pan uważał?”)
+#   1. Duplikaty przy ponownym uruchomieniu: load job z WRITE_TRUNCATE na partycji
+#      dnia — ponowienie za ten sam dzień zastępuje dane zamiast je dublować.
+#   2. Ucięty raport: pętla limit/offset do row_count — raport większy niż
+#      10 000 wierszy (domyślny limit API) jest pobierany w całości.
+#   3. Zły format daty: GA4 zwraca RRRRMMDD, kolumna DATE wymaga RRRR-MM-DD.
+#   4. Niezgodne typy: liczniki jako liczby całkowite, zgodnie ze schematem INT64.
+#   5. Cichy niekompletny zapis: liczba wierszy w partycji porównana z row_count;
+#      niezgodność = log ERROR i kod 500 dla harmonogramu.
+#   Dodatkowo: ponawianie przy 429/5xx, logi strukturalne, data w żądaniu do backfillu.
 # ----------------------------------------------------------------------------
 
 
 # ----------------------------------------------------------------------------
-# Przykładowy wynik (dane syntetyczne): wiersze w tabeli BigQuery
+# Przykładowy wynik (dane syntetyczne)
 #
-# Jeden dzień (sprzed 2 dni) na uruchomienie, typy wg create_table_bq.sql.
-# Odpowiedź HTTP: 200 {"message": "Dane zostały pomyślnie zapisane."} albo 500 {"error": "..."}.
+# Odpowiedź HTTP przy sukcesie:
+#   200 {"message": "Dane zostały pomyślnie zapisane.", "date": "2026-10-31", "rows": 5}
+# Log w Cloud Logging:
+#   {"severity": "INFO", "message": "Zapisano partycję", "date": "2026-10-31", "rows": 5}
+#
+# Partycja 2026-10-31 w tabeli BigQuery (date jako DATE, keyEvents jako INT64):
 #
 # | date | googleAdsCampaignName | googleAdsCampaignId | keyEvents | advertiserAdCost | advertiserAdCostPerKeyEvent | advertiserAdImpressions | advertiserAdClicks | advertiserAdCostPerClick | purchaseRevenue | returnOnAdSpend |
 # |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -155,3 +225,5 @@ def ga4_api_gads(request):
 # | 2026-10-31 | PL_PMax_Wszystkie_produkty | 21034567813 | 97 | 2950.00 | 30.41 | 210400 | 3120 | 0.95 | 69870.25 | 23.68 |
 # | 2026-10-31 | PL_Display_Remarketing | 21034567814 | 12 | 640.20 | 53.35 | 380500 | 1015 | 0.63 | 6210.80 | 9.70 |
 # | 2026-10-31 | PL_YouTube_Zasięg | 21034567815 | 3 | 1200.00 | 400.00 | 455000 | 690 | 1.74 | 590.00 | 0.49 |
+#
+# Ponowne uruchomienie z {"date": "2026-10-31"} daje te same 5 wierszy, nie 10.
