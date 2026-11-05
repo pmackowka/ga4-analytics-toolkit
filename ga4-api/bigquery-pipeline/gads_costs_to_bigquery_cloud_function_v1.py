@@ -21,14 +21,27 @@ Zmienne środowiskowe (ustawiane w konfiguracji Cloud Function):
 
 # ============================================================================
 # JAK OPOWIEDZIEĆ TEN SKRYPT — 7 kroków (komentarze „KROK n” niżej w kodzie)
-#   1. Uruchomienie: Cloud Scheduler codziennie rano wywołuje funkcję przez HTTP.
-#   2. Konfiguracja: ID właściwości GA4 i tabeli docelowej ze zmiennych
-#      środowiskowych — nic nie jest wpisane na sztywno w kodzie.
-#   3. Zakres dat: dzień sprzed 2 dni, bo dane Google Ads w GA4 układają się do 48 h.
-#   4. Uwierzytelnienie: konto usługi przypisane do funkcji (ADC), bez pliku klucza.
-#   5. Zapytanie do GA4 Data API (REST): wymiary + metryki kampanii Google Ads.
-#   6. Transformacja: każdy wiersz odpowiedzi -> słownik z typami pod schemat tabeli.
-#   7. Zapis do BigQuery i odpowiedź HTTP 200 / 500 dla harmonogramu.
+#   1. Uruchomienie: Cloud Scheduler raz dziennie wysyła zapytanie HTTP na adres
+#      funkcji. Funkcja nie czyta niczego z tego zapytania — sam fakt wywołania
+#      uruchamia pobranie.
+#   2. Konfiguracja: ID właściwości GA4, dataset i tabela docelowa pochodzą ze
+#      zmiennych środowiskowych, nic nie jest wpisane na sztywno w kodzie. Brak
+#      zmiennej kończy się błędem od razu przy starcie, a nie w połowie pracy.
+#   3. Zakres dat: jeden dzień — przedwczoraj. Koszty i konwersje Google Ads
+#      dochodzą do GA4 z opóźnieniem do ok. 48 h, więc wczoraj byłby niepełny.
+#   4. Uwierzytelnienie: ADC (Application Default Credentials) to mechanizm
+#      bibliotek Google, który sam szuka poświadczeń w ustalonej kolejności, więc
+#      klienci GA4 i BigQuery tworzeni są bez argumentów. W Cloud Functions ADC
+#      znajduje konto usługi przypisane do funkcji — bez pliku klucza w kodzie i repo.
+#   5. Zapytanie do GA4 Data API (REST; biblioteka wysyła je domyślnie przez gRPC):
+#      wymiary to dzień i kampania Google Ads, metryki to m.in. koszt, kliknięcia,
+#      przychód i ROAS. Jedno wywołanie zwraca cały raport dnia.
+#   6. Transformacja: GA4 zwraca każdą wartość jako tekst, w kolejności z definicji
+#      raportu. Każdy wiersz zamieniam na słownik z nazwami kolumn tabeli i jawnie
+#      rzutuję typy — kwoty na float, liczniki na int.
+#   7. Zapis do BigQuery przez insert_rows_json i odpowiedź HTTP: 200 przy sukcesie,
+#      500 przy błędzie. Dzięki 500 nieudane uruchomienie widać w Cloud Scheduler
+#      i w logach, a nie ginie po cichu.
 # Na końcu pliku: co poprawiłbym dziś (idempotentność, paginacja, format daty).
 # ============================================================================
 
